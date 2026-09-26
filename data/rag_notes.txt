@@ -1,0 +1,7 @@
+RAG stands for Retrieval-Augmented Generation.
+
+RAG combines information retrieval with a large language model. The retrieval system searches a knowledge base for relevant documents or passages. The retrieved context is then provided to the language model so it can generate an answer grounded in that information.
+
+A typical RAG pipeline contains document ingestion, text chunking, embeddings, vector search, keyword retrieval such as BM25, reranking, and answer generation.
+
+Hybrid retrieval combines semantic vector search with lexical keyword search. Reranking can then reorder retrieved candidates according to their relevance to the user's query.
