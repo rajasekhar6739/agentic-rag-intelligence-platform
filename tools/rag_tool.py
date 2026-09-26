@@ -5,71 +5,100 @@ from typing import Any, Optional
 
 class RAGTool:
     """
-    Lightweight RAG tool with injectable retriever.
+    RAG retrieval tool used by the AgentOrchestrator.
 
     Supports:
-        - retriever.search(query, top_k)
+        - HybridRetriever
+        - Vector retrievers
         - callable retrievers
-        - local lexical retrieval when no backend is configured
+        - local fallback retrieval
     """
 
     description = (
-        "Search indexed documents and return relevant evidence "
-        "with source and page metadata."
+        "Search indexed documents and return relevant "
+        "evidence with source, page and score metadata."
     )
 
-    def __init__(self, retriever: Optional[Any] = None):
+    def __init__(
+        self,
+        retriever: Optional[Any] = None,
+    ):
+
         self.retriever = retriever
         self.documents = []
 
-    def configure(self, retriever: Any):
+    # ============================================================
+    # CONFIGURE
+    # ============================================================
+
+    def configure(
+        self,
+        retriever: Any,
+    ):
+
         self.retriever = retriever
+
         return self
 
     # ============================================================
-    # DOCUMENT LOADING
+    # LOAD DOCUMENTS
     # ============================================================
 
-    def load_documents(self, documents):
-        documents = list(documents or [])
+    def load_documents(
+        self,
+        documents,
+    ):
 
-        if self.retriever is not None:
-
-            if hasattr(self.retriever, "load_documents"):
-                result = self.retriever.load_documents(documents)
-
-                return {
-                    "success": True,
-                    "loaded": len(documents),
-                    "backend": type(self.retriever).__name__,
-                    "result": result,
-                }
-
-            if hasattr(self.retriever, "add_documents"):
-                result = self.retriever.add_documents(documents)
-
-                return {
-                    "success": True,
-                    "loaded": len(documents),
-                    "backend": type(self.retriever).__name__,
-                    "result": result,
-                }
-
-            if hasattr(self.retriever, "upsert"):
-                result = self.retriever.upsert(documents)
-
-                return {
-                    "success": True,
-                    "loaded": len(documents),
-                    "backend": type(self.retriever).__name__,
-                    "result": result,
-                }
+        documents = list(
+            documents or []
+        )
 
         self.documents = documents
 
+        if self.retriever is not None:
+
+            if hasattr(
+                self.retriever,
+                "build",
+            ):
+
+                self.retriever.build(
+                    documents
+                )
+
+            elif hasattr(
+                self.retriever,
+                "load_documents",
+            ):
+
+                self.retriever.load_documents(
+                    documents
+                )
+
+            elif hasattr(
+                self.retriever,
+                "add_documents",
+            ):
+
+                self.retriever.add_documents(
+                    documents
+                )
+
+            return {
+                "success": True,
+                "loaded": len(
+                    documents
+                ),
+                "backend": type(
+                    self.retriever
+                ).__name__,
+            }
+
         return {
             "success": True,
-            "loaded": len(documents),
+            "loaded": len(
+                documents
+            ),
             "backend": "local",
         }
 
@@ -82,55 +111,73 @@ class RAGTool:
         query: str,
         top_k: int = 5,
     ):
+
         if not query:
             return []
 
-        top_k = max(1, int(top_k))
+        top_k = max(
+            1,
+            int(top_k),
+        )
 
         # --------------------------------------------------------
-        # EXTERNAL RETRIEVER
+        # RETRIEVER
         # --------------------------------------------------------
 
         if self.retriever is not None:
 
-            if hasattr(self.retriever, "search"):
-                result = self.retriever.search(
-                    query,
-                    top_k=top_k,
+            if hasattr(
+                self.retriever,
+                "search",
+            ):
+
+                results = (
+                    self.retriever.search(
+                        query,
+                        top_k=top_k,
+                    )
                 )
 
-            elif callable(self.retriever):
-                result = self.retriever(
+            elif callable(
+                self.retriever
+            ):
+
+                results = self.retriever(
                     query,
                     top_k=top_k,
                 )
 
             else:
+
                 raise RuntimeError(
-                    "Configured RAG retriever does not support search()."
+                    "Configured retriever "
+                    "does not support search()."
                 )
 
-            if result is None:
-                return []
-
-            if isinstance(result, list):
-                return result[:top_k]
-
-            return result
+            return self._normalize_results(
+                results,
+                top_k,
+            )
 
         # --------------------------------------------------------
-        # LOCAL LEXICAL RETRIEVAL
+        # LOCAL FALLBACK
         # --------------------------------------------------------
 
         query_words = set(
-            str(query).lower().split()
+            str(query)
+            .lower()
+            .split()
         )
 
         scored = []
 
-        for document in self.documents:
+        for index, document in enumerate(
+            self.documents
+        ):
 
-            text = self._get_text(document)
+            text = self._get_text(
+                document
+            )
 
             if not text:
                 continue
@@ -139,34 +186,180 @@ class RAGTool:
                 text.lower().split()
             )
 
-            overlap = query_words.intersection(words)
+            overlap = (
+                query_words
+                .intersection(words)
+            )
 
-            score = len(overlap)
+            score = len(
+                overlap
+            )
 
             if score <= 0:
                 continue
 
             result = self._to_result(
-                document=document,
-                score=score,
+                document,
+                score,
+                index,
             )
 
-            scored.append(result)
+            scored.append(
+                result
+            )
 
         scored.sort(
-            key=lambda item: item.get("score", 0),
+            key=lambda item: float(
+                item.get(
+                    "score",
+                    0,
+                )
+            ),
             reverse=True,
         )
 
         return scored[:top_k]
 
     # ============================================================
-    # HELPERS
+    # NORMALIZE RESULTS
+    # ============================================================
+
+    @classmethod
+    def _normalize_results(
+        cls,
+        results,
+        top_k,
+    ):
+
+        if results is None:
+            return []
+
+        if isinstance(
+            results,
+            dict,
+        ):
+
+            if "results" in results:
+
+                results = results.get(
+                    "results",
+                    [],
+                )
+
+            else:
+
+                results = [
+                    results
+                ]
+
+        if isinstance(
+            results,
+            str,
+        ):
+
+            results = [
+                results
+            ]
+
+        if not isinstance(
+            results,
+            (list, tuple),
+        ):
+
+            results = [
+                results
+            ]
+
+        normalized = []
+
+        for index, item in enumerate(
+            results
+        ):
+
+            if isinstance(
+                item,
+                dict,
+            ):
+
+                result = dict(item)
+
+            elif isinstance(
+                item,
+                str,
+            ):
+
+                result = {
+                    "text": item,
+                    "source": "unknown",
+                    "page": 1,
+                    "chunk_id": (
+                        f"chunk_{index}"
+                    ),
+                    "score": 0.0,
+                }
+
+            else:
+
+                result = (
+                    cls._to_result(
+                        item,
+                        getattr(
+                            item,
+                            "score",
+                            0.0,
+                        ),
+                        index,
+                    )
+                )
+
+            result.setdefault(
+                "text",
+                result.get(
+                    "content",
+                    "",
+                ),
+            )
+
+            result.setdefault(
+                "source",
+                "unknown",
+            )
+
+            result.setdefault(
+                "page",
+                1,
+            )
+
+            result.setdefault(
+                "chunk_id",
+                f"chunk_{index}",
+            )
+
+            result.setdefault(
+                "score",
+                0.0,
+            )
+
+            normalized.append(
+                result
+            )
+
+        return normalized[:top_k]
+
+    # ============================================================
+    # TEXT EXTRACTION
     # ============================================================
 
     @staticmethod
-    def _get_text(document):
-        if isinstance(document, dict):
+    def _get_text(
+        document,
+    ):
+
+        if isinstance(
+            document,
+            dict,
+        ):
+
             return str(
                 document.get(
                     "text",
@@ -177,58 +370,105 @@ class RAGTool:
                 )
             )
 
-        if hasattr(document, "text"):
-            return str(document.text)
+        if hasattr(
+            document,
+            "text",
+        ):
 
-        return str(document)
+            return str(
+                document.text
+            )
+
+        if hasattr(
+            document,
+            "content",
+        ):
+
+            return str(
+                document.content
+            )
+
+        return str(
+            document
+        )
+
+    # ============================================================
+    # RESULT CONVERSION
+    # ============================================================
 
     @classmethod
     def _to_result(
         cls,
         document,
-        score,
+        score=0.0,
+        index=0,
     ):
-        text = cls._get_text(document)
 
-        if isinstance(document, dict):
+        text = cls._get_text(
+            document
+        )
 
-            result = dict(document)
+        if isinstance(
+            document,
+            dict,
+        ):
+
+            result = dict(
+                document
+            )
 
             result["text"] = text
-            result["score"] = score
+            result.setdefault(
+                "score",
+                score,
+            )
+
+            result.setdefault(
+                "source",
+                "unknown",
+            )
+
+            result.setdefault(
+                "page",
+                1,
+            )
+
+            result.setdefault(
+                "chunk_id",
+                f"chunk_{index}",
+            )
 
             return result
 
-        result = {
+        return {
             "text": text,
             "score": score,
+            "source": getattr(
+                document,
+                "source",
+                "unknown",
+            ),
+            "page": getattr(
+                document,
+                "page",
+                1,
+            ),
+            "chunk_id": getattr(
+                document,
+                "chunk_id",
+                f"chunk_{index}",
+            ),
         }
 
-        source = getattr(
-            document,
-            "source",
-            None,
+    # ============================================================
+    # REPRESENTATION
+    # ============================================================
+
+    def __repr__(self):
+
+        return (
+            "RAGTool("
+            f"retriever={type(self.retriever).__name__ "
+            "if self.retriever else 'None'}"
+            ")"
         )
-
-        page = getattr(
-            document,
-            "page",
-            None,
-        )
-
-        chunk_id = getattr(
-            document,
-            "chunk_id",
-            None,
-        )
-
-        if source is not None:
-            result["source"] = source
-
-        if page is not None:
-            result["page"] = page
-
-        if chunk_id is not None:
-            result["chunk_id"] = chunk_id
-
-        return result
